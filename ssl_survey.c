@@ -58,8 +58,13 @@ int main(int argc, char* argv[]) {
     SSL_CTX_set_max_proto_version(ctx, TLS1_3_VERSION);
 
     for (int i = 1; i < argc; i++) {
-        const char *hostname = argv[i];
-        printf("[ Сканирование %s ]\n", hostname);
+        const char *url = argv[i];
+        char hostname[256];
+        if (sscanf(url, "https://%[^/]", hostname) != 1) {
+            fprintf(stderr, "Неверный задан URL: %s\n", url);
+            continue;
+        }
+        printf("[ Сканирование %s ]\n", url);
 
         SSL *ssl = SSL_new(ctx);
         if (!ssl) {
