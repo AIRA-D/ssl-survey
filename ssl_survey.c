@@ -32,7 +32,37 @@ void print_certificate_key_length(SSL *ssl) {
         printf("0 (Ошибка получения сертификата)\n");
     }
 }
+void print_tls_versions(SSL *ssl) {
+    long max_version = SSL_get_max_proto_version(ssl);
+    long min_version = SSL_get_min_proto_version(ssl);
 
+    printf("Максимальная поддерживаемая версия TLS: ");
+    if (max_version == TLS1_3_VERSION) {
+        printf("TLSv1.3\n");
+    } else if (max_version == TLS1_2_VERSION) {
+        printf("TLSv1.2\n");
+    } else if (max_version == TLS1_1_VERSION) {
+        printf("TLSv1.1\n");
+    } else if (max_version == TLS1_VERSION) {
+        printf("TLSv1\n");
+    } else {
+        printf("(NONE)\n");
+    }
+
+    printf("Минимальная поддерживаемая версия TLS: ");
+    if (min_version == TLS1_3_VERSION) {
+        printf("TLSv1.3\n");
+    } else if (min_version == TLS1_2_VERSION) {
+        printf("TLSv1.2\n");
+    } else if (min_version == TLS1_1_VERSION) {
+        printf("TLSv1.1\n");
+    } else if (min_version == TLS1_VERSION) {
+        printf("TLSv1\n");
+    } else {
+        printf("(NONE)n");
+    }
+
+}
 
 int main(int argc, char* argv[]) {
     if (argc < 2) {
@@ -114,6 +144,7 @@ int main(int argc, char* argv[]) {
 
         print_supported_algorithms(ssl);
         print_certificate_key_length(ssl);
+        print_tls_versions(ssl);
 
         SSL_shutdown(ssl);
         SSL_free(ssl);
