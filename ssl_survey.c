@@ -70,8 +70,6 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-//    char *hostname = argv[1];
-
     SSL_library_init();
     SSL_load_error_strings();
     OpenSSL_add_all_ciphers();
@@ -123,9 +121,9 @@ int main(int argc, char* argv[]) {
         memset(&server_addr, 0, sizeof(server_addr));
         server_addr.sin_family = AF_INET;
         server_addr.sin_port = htons(443);
-        memcpy(&server_addr.sin_addr, he -> h_addr, he->h_length);
+        memcpy(&server_addr.sin_addr, he -> h_addr, he -> h_length);
 
-        if (connect(sockfd, (struct sockaddr*) & server_addr, sizeof (server_addr)) == -1) {
+        if (connect(sockfd, (struct sockaddr*) & server_addr, sizeof(server_addr)) == -1) {
             perror("connect() error\n");
             close(sockfd);
             SSL_free(ssl);
