@@ -6,6 +6,8 @@
 #include <unistd.h>
 #include <netdb.h>
 
+#define HOSTNAME_MAX_LEN 256
+
 void print_supported_algorithms(SSL *ssl) {
     printf("Используемые алгоритмы шифрования: ");
     const SSL_CIPHER *cipher = SSL_get_current_cipher(ssl);
@@ -63,10 +65,72 @@ void print_tls_versions(SSL *ssl) {
     }
 
 }
+void process_hostname(const char *url, FILE *output) {
 
-int main(int argc, char* argv[]) {
+    char hostname[HOSTNAME_MAX_LEN];
+    SSL_CTX *ctx = SSL_CTX_new(TLS_client_method());
+    if (!ctx) {
+        ERR_print_errors_fp(stderr);
+    }
+
+    SSL_CTX_set_options(ctx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_COMPRESSION);
+    SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
+    SSL_CTX_set_max_proto_version(ctx, TLS1_3_VERSION);
+
+    if (sscanf(url, "https://%[^/]", hostname) != 1) {
+        fprintf(stderr, "Неверный задан URL: %s\n", url);
+    }
+    printf("[ Сканирование %s ]\n", url);
+
+    SSL *ssl = SSL_new(ctx);
+    if (!ssl) {
+        ERR_print_errors_fp(stderr);
+        goto ssl_end;
+    }
+
+    struct hostent *he = gethostbyname(hostname);
+    if (!he) {
+        fprintf(stderr, "gethostbyname() error\n");
+        goto ssl_end;
+    }
+
+    int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (sockfd == -1) {
+        perror("socket() error\n");
+        goto ssl_end;
+    }
+
+    struct sockaddr_in server_addr;
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(443);
+    memcpy(&server_addr.sin_addr, he -> h_addr, he -> h_length);
+
+    if (connect(sockfd, (struct sockaddr*) & server_addr, sizeof(server_addr)) == -1) {
+        perror("connect() error\n");
+        close(sockfd);
+        goto ssl_end;
+    }
+
+    SSL_set_fd(ssl, sockfd);
+    if (SSL_connect(ssl) <= 0) {
+        ERR_print_errors_fp(stderr);
+        close(sockfd);
+        goto ssl_end;
+    }
+    
+    SSL_shutdown(ssl);
+    close(sockfd);
+    goto ssl_end;
+
+    ssl_end:
+        SSL_free(ssl);
+        SSL_CTX_free(ctx);
+}
+
+int main(int argc, char *argv[]) {
     if (argc < 2) {
-        fprintf(stderr, "Usage: %s <hostname> [hostname2] ...\n", argv[0]);
+        fprintf(stderr, "Usage: %s [-f <file>] [-o <output_file>] [<hostname1> <hostname2> ...]\n", argv[0]);
         return 1;
     }
 
@@ -75,81 +139,52 @@ int main(int argc, char* argv[]) {
     OpenSSL_add_all_ciphers();
     OpenSSL_add_all_digests();
 
-    SSL_CTX *ctx = SSL_CTX_new(TLS_client_method());
-    if (!ctx) {
-        ERR_print_errors_fp(stderr);
-        return 1;
+    char *output_filename = NULL;
+    char *input_filename = NULL;
+    int i = 1;
+    while (i < argc && argv[i][0] == '-') {
+        if (strcmp(argv[i], "-f") == 0 && i + 1 < argc) {
+            input_filename = argv[i + 1];
+            i += 2;
+        } else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
+            output_filename = argv[i + 1];
+            i += 2;
+        } else {
+            fprintf(stderr, "Неверный параметр: %s\n", argv[i]);
+            return 1;
+        }
     }
 
-    SSL_CTX_set_options(ctx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_COMPRESSION);
-    SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
-    SSL_CTX_set_max_proto_version(ctx, TLS1_3_VERSION);
+    FILE *output = stdout;
+    if (output_filename) {
+        output = fopen(output_filename, "w");
+        if (!output) {
+            perror("Ошибка открытия выходного файла");
+            return 1;
+        }
+    }
 
-    for (int i = 1; i < argc; i++) {
-        const char *url = argv[i];
+    if (input_filename) {
+        FILE *input = fopen(input_filename, "r");
+        if (!input) {
+            perror("Ошибка открытия входного файла");
+            return 1;
+        }
         char hostname[256];
-        if (sscanf(url, "https://%[^/]", hostname) != 1) {
-            fprintf(stderr, "Неверный задан URL: %s\n", url);
-            continue;
+        while (fscanf(input, "%s", hostname) != EOF) {
+            process_hostname(hostname, output);
         }
-        printf("[ Сканирование %s ]\n", url);
-
-        SSL *ssl = SSL_new(ctx);
-        if (!ssl) {
-            ERR_print_errors_fp(stderr);
-            SSL_CTX_free(ctx);
-            return 1;
+        fclose(input);
+    } else {
+        for (; i < argc; i++) {
+            const char *hostname = argv[i];
+            process_hostname(hostname, output);
         }
-
-        struct hostent *he = gethostbyname(hostname);
-        if (!he) {
-            fprintf(stderr, "gethostbyname() error\n");
-            SSL_free(ssl);
-            SSL_CTX_free(ctx);
-            return 1;
-        }
-
-        int sockfd = socket(AF_INET, SOCK_STREAM, 0);
-        if (sockfd == -1) {
-            perror("socket() error\n");
-            SSL_free(ssl);
-            SSL_CTX_free(ctx);
-            return 1;
-        }
-
-        struct sockaddr_in server_addr;
-        memset(&server_addr, 0, sizeof(server_addr));
-        server_addr.sin_family = AF_INET;
-        server_addr.sin_port = htons(443);
-        memcpy(&server_addr.sin_addr, he -> h_addr, he -> h_length);
-
-        if (connect(sockfd, (struct sockaddr*) & server_addr, sizeof(server_addr)) == -1) {
-            perror("connect() error\n");
-            close(sockfd);
-            SSL_free(ssl);
-            SSL_CTX_free(ctx);
-            return 1;
-        }
-
-        SSL_set_fd(ssl, sockfd);
-        if (SSL_connect(ssl) <= 0) {
-            ERR_print_errors_fp(stderr);
-            close(sockfd);
-            SSL_free(ssl);
-            SSL_CTX_free(ctx);
-            return 1;
-        }
-
-        print_supported_algorithms(ssl);
-        print_certificate_key_length(ssl);
-        print_tls_versions(ssl);
-
-        SSL_shutdown(ssl);
-        SSL_free(ssl);
-        close(sockfd);
-        printf("\n");
     }
 
-    SSL_CTX_free(ctx);
+    if (output_filename) {
+        fclose(output);
+    }
+
     return 0;
 }
