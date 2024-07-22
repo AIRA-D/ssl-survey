@@ -67,7 +67,16 @@ void print_tls_versions(SSL *ssl, FILE *output) {
 
 }
 void process_hostname(const char *url, FILE *output) {
+
+    if (strncmp(url, "https://", 8) != 0) {
+        fprintf(stderr, "Неверный формат URL: %s\n", url);
+        return;
+    }
+
     char hostname[HOSTNAME_MAX_LEN];
+    strncpy(hostname, url + 8, HOSTNAME_MAX_LEN); // Копирование имени хоста
+    hostname[HOSTNAME_MAX_LEN - 1] = '0';
+
     SSL_CTX *ctx = SSL_CTX_new(TLS_client_method());
 
     if (!ctx) {
@@ -83,7 +92,7 @@ void process_hostname(const char *url, FILE *output) {
         fprintf(stderr, "Неверный задан URL: %s\n", url);
         return;
     }
-    printf("[ Сканирование %s ]\n", url);
+//    printf("[ Сканирование %s ]\n", url);
     fprintf(output, "[ %s ]\n", url);
 
     SSL *ssl = SSL_new(ctx);
@@ -130,11 +139,11 @@ void process_hostname(const char *url, FILE *output) {
 
     SSL_shutdown(ssl);
     close(sockfd);
-    goto ssl_end;
+    //goto ssl_end;
 
-    ssl_end:
-        SSL_free(ssl);
-        SSL_CTX_free(ctx);
+ssl_end:
+    SSL_free(ssl);
+    SSL_CTX_free(ctx);
 }
 
 int main(int argc, char *argv[]) {
@@ -179,13 +188,34 @@ int main(int argc, char *argv[]) {
             return 1;
         }
         char hostname[HOSTNAME_MAX_LEN];
+        int count = 0;
+        int total = 0;
+
         while (fscanf(input, "%s", hostname) != EOF) {
+            total++;
+        }
+        if (total == 0) {
+            fprintf(stderr, "Ошибка: общее количество хостов равно 0\n");
+            fclose(input);
+            return 1;
+        }
+
+        rewind(input);
+
+        while (fscanf(input, "%s", hostname) != EOF) {
+            count++;
+            double percentage = (double)count * 100 / total;
+            printf("[ Сканирование %s ] %.2lf%%\n", hostname, percentage);
             process_hostname(hostname, output);
         }
         fclose(input);
     } else {
+        int count = 0;
+        int total = argc - i;
         for (; i < argc; i++) {
             const char *hostname = argv[i];
+            count++;
+            printf("[ Сканирование %s ] %d%%\n", hostname, (count * 100) / total);
             process_hostname(hostname, output);
         }
     }
