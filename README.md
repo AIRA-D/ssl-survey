@@ -15,7 +15,7 @@
 ```bash
  gcc ssl_survey.c -o ssl_survey -lssl -lcrypto
 ```
-или используйте файл CMakeLists.txt
+или используйте файл `CMakeLists.txt`
 
 ----
 
@@ -69,7 +69,7 @@ OpenSSL is used as a library for SSL/TLS connection.
 ```bash
  gcc ssl_survey.c -o ssl_survey -lssl -lcrypto
 ```
-or use the CMakeLists.txt file
+or use the `CMakeLists.txt` file
 
 ----
 
