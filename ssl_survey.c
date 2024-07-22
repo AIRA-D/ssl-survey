@@ -7,70 +7,72 @@
 #include <netdb.h>
 
 #define HOSTNAME_MAX_LEN 256
+#define HTTPS_PORT 443
 
-void print_supported_algorithms(SSL *ssl) {
-    printf("Используемые алгоритмы шифрования: ");
+void print_supported_algorithms(SSL *ssl, FILE *output) {
+    fprintf(output, "Используемые алгоритмы шифрования: ");
     const SSL_CIPHER *cipher = SSL_get_current_cipher(ssl);
     if (cipher) {
-        printf("%s\n", SSL_CIPHER_get_name(cipher));
+        fprintf(output, "%s\n", SSL_CIPHER_get_name(cipher));
     } else {
-        printf("(NONE)\n");
+        fprintf(output, "(NONE)\n");
     }
 }
-void print_certificate_key_length(SSL *ssl) {
-    printf("Используемая длина ключа в сертификатах: ");
+void print_certificate_key_length(SSL *ssl, FILE *output) {
+    fprintf(output, "Используемая длина ключа в сертификатах: ");
     X509 *cert = SSL_get_peer_certificate(ssl);
     if (cert) {
         EVP_PKEY *pkey = X509_get_pubkey(cert);
         if (pkey) {
             int key_length = EVP_PKEY_bits(pkey);
-            printf("%d\n", key_length);
+            fprintf(output, "%d\n", key_length);
             EVP_PKEY_free(pkey);
         } else {
-            printf("0 (Ошибка получения ключа)\n");
+            fprintf(output, "0 (Ошибка получения ключа)\n");
         }
         X509_free(cert);
     } else {
-        printf("0 (Ошибка получения сертификата)\n");
+        fprintf(output, "0 (Ошибка получения сертификата)\n");
     }
 }
-void print_tls_versions(SSL *ssl) {
+void print_tls_versions(SSL *ssl, FILE *output) {
     long max_version = SSL_get_max_proto_version(ssl);
     long min_version = SSL_get_min_proto_version(ssl);
 
-    printf("Максимальная поддерживаемая версия TLS: ");
+    fprintf(output, "Максимальная поддерживаемая версия TLS: ");
     if (max_version == TLS1_3_VERSION) {
-        printf("TLSv1.3\n");
+        fprintf(output, "TLSv1.3\n");
     } else if (max_version == TLS1_2_VERSION) {
-        printf("TLSv1.2\n");
+        fprintf(output, "TLSv1.2\n");
     } else if (max_version == TLS1_1_VERSION) {
-        printf("TLSv1.1\n");
+        fprintf(output, "TLSv1.1\n");
     } else if (max_version == TLS1_VERSION) {
-        printf("TLSv1\n");
+        fprintf(output, "TLSv1\n");
     } else {
-        printf("(NONE)\n");
+        fprintf(output, "(NONE)\n");
     }
 
-    printf("Минимальная поддерживаемая версия TLS: ");
+    fprintf(output, "Минимальная поддерживаемая версия TLS: ");
     if (min_version == TLS1_3_VERSION) {
-        printf("TLSv1.3\n");
+        fprintf(output, "TLSv1.3\n");
     } else if (min_version == TLS1_2_VERSION) {
-        printf("TLSv1.2\n");
+        fprintf(output, "TLSv1.2\n");
     } else if (min_version == TLS1_1_VERSION) {
-        printf("TLSv1.1\n");
+        fprintf(output, "TLSv1.1\n");
     } else if (min_version == TLS1_VERSION) {
-        printf("TLSv1\n");
+        fprintf(output, "TLSv1\n");
     } else {
-        printf("(NONE)n");
+        fprintf(output, "(NONE)n");
     }
 
 }
 void process_hostname(const char *url, FILE *output) {
-
     char hostname[HOSTNAME_MAX_LEN];
     SSL_CTX *ctx = SSL_CTX_new(TLS_client_method());
+
     if (!ctx) {
         ERR_print_errors_fp(stderr);
+        return;
     }
 
     SSL_CTX_set_options(ctx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_COMPRESSION);
@@ -79,8 +81,10 @@ void process_hostname(const char *url, FILE *output) {
 
     if (sscanf(url, "https://%[^/]", hostname) != 1) {
         fprintf(stderr, "Неверный задан URL: %s\n", url);
+        return;
     }
     printf("[ Сканирование %s ]\n", url);
+    fprintf(output, "[ %s ]\n", url);
 
     SSL *ssl = SSL_new(ctx);
     if (!ssl) {
@@ -103,7 +107,7 @@ void process_hostname(const char *url, FILE *output) {
     struct sockaddr_in server_addr;
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(443);
+    server_addr.sin_port = htons(HTTPS_PORT);
     memcpy(&server_addr.sin_addr, he -> h_addr, he -> h_length);
 
     if (connect(sockfd, (struct sockaddr*) & server_addr, sizeof(server_addr)) == -1) {
@@ -115,10 +119,15 @@ void process_hostname(const char *url, FILE *output) {
     SSL_set_fd(ssl, sockfd);
     if (SSL_connect(ssl) <= 0) {
         ERR_print_errors_fp(stderr);
+        fprintf(output, "!! Ошибка при установлении SSL-соединения\n");
         close(sockfd);
         goto ssl_end;
     }
-    
+
+    print_supported_algorithms(ssl, output);
+    print_certificate_key_length(ssl, output);
+    print_tls_versions(ssl, output);
+
     SSL_shutdown(ssl);
     close(sockfd);
     goto ssl_end;
@@ -163,14 +172,13 @@ int main(int argc, char *argv[]) {
             return 1;
         }
     }
-
     if (input_filename) {
         FILE *input = fopen(input_filename, "r");
         if (!input) {
             perror("Ошибка открытия входного файла");
             return 1;
         }
-        char hostname[256];
+        char hostname[HOSTNAME_MAX_LEN];
         while (fscanf(input, "%s", hostname) != EOF) {
             process_hostname(hostname, output);
         }
