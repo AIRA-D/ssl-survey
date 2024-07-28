@@ -5,10 +5,51 @@
 #include <netinet/in.h>
 #include <unistd.h>
 #include <netdb.h>
+#include <getopt.h>
+#include <string.h>
+#include <sys/time.h>
+#include <errno.h>
 
 #define HOSTNAME_MAX_LEN 256
 #define HTTPS_PORT 443
+#define HEARTBEAT_TIMEOUT_SEC 5
 
+typedef struct {
+    char *input_filename;
+    char *output_filename;
+    int verbose;
+} Options;
+
+void parse_options(int argc, char *argv[], Options *options) {
+    static struct option long_options[] = {
+            {"input", required_argument, 0, 'f'},
+            {"output", required_argument, 0, 'o'},
+            {"help", no_argument, 0, 'h'},
+            {0, 0 ,0 ,0},
+    };
+    int index;
+    int c;
+
+    while ((c = getopt_long(argc, argv, "f:o:h", long_options, &index)) != -1) {
+        switch (c) {
+            case 'f':
+                options->input_filename = optarg;
+                break;
+            case 'o':
+                options->output_filename = optarg;
+                break;
+            case 'h':
+                fprintf(stderr, "Usage: %s [--input <file>] [--output <file>] [--verbose] [<hostname1> <hostname2> ...]\n", argv[0]);
+                fprintf(stderr, "  --input, -f <file>      Input file with hostnames\n");
+                fprintf(stderr, "  --output, -o <file>     Output file for results\n");
+                fprintf(stderr, "  --help, -h              Show this help message\n");
+                exit(0);
+            default:
+                fprintf(stderr, "Invalid option: %c\n", optopt);
+                exit(1);
+        }
+    }
+}
 void print_supported_algorithms(SSL *ssl, FILE *output) {
     fprintf(output, "Используемые алгоритмы шифрования: ");
     const SSL_CIPHER *cipher = SSL_get_current_cipher(ssl);
@@ -66,6 +107,45 @@ void print_tls_versions(SSL *ssl, FILE *output) {
     }
 
 }
+int check_heartbleed(SSL *ssl, FILE *output) {
+    int is_vulnerable = 0;
+
+    if (SSL_get_version(ssl) == TLS1_VERSION || SSL_get_version(ssl) == TLS1_1_VERSION) {
+
+        int bytes_written = SSL_write(ssl, "\x01\x00\x00\x03", 4);
+
+        if (bytes_written == 4) {
+            struct timeval timeout;
+            timeout.tv_sec = HEARTBEAT_TIMEOUT_SEC;
+            timeout.tv_usec = 0;
+
+            fd_set readfds;
+            FD_ZERO(&readfds);
+            FD_SET(SSL_get_fd(ssl), &readfds);
+
+            int result = select(SSL_get_fd(ssl) + 1, &readfds, NULL, NULL, &timeout);
+
+            if (result > 0) {
+                char buffer[1024];
+                int bytes_read = SSL_read(ssl, buffer, sizeof(buffer));
+                if (bytes_read > 0) {
+                    is_vulnerable = 1;
+                    fprintf(output, "!! Сервер уязвим к атаке Heartbleed\n");
+                } else {
+                    fprintf(output, "!! Сервер ответил на Heartbeat, но не вернул данные (возможно, не уязвим)\n");
+                }
+            } else if (result == 0) {
+                fprintf(output, "!! Сервер не ответил на Heartbeat (возможно, не уязвим)\n");
+            } else if (errno == EINTR) {
+                fprintf(output, "!! Ошибка при ожидании ответа Heartbeat (возможно, не уязвим)\n");
+            }
+        }
+    } else {
+        fprintf(output, "!! Сервер использует более новую версию TLS, не уязвимую к Heartbleed\n");
+    }
+
+    return is_vulnerable;
+}
 void process_hostname(const char *url, FILE *output) {
 
     if (strncmp(url, "https://", 8) != 0) {
@@ -73,8 +153,15 @@ void process_hostname(const char *url, FILE *output) {
         return;
     }
 
-    char hostname[HOSTNAME_MAX_LEN];
-    strncpy(hostname, url + 8, HOSTNAME_MAX_LEN); // Копирование имени хоста
+    char hostname[HOSTNAME_MAX_LEN + 1]; // +1 для символа '\0'
+    memset(hostname, 0, sizeof(hostname));
+    strncat(hostname, url + 8, HOSTNAME_MAX_LEN);
+
+    if (strlen(hostname) >= HOSTNAME_MAX_LEN) {
+        fprintf(stderr, "Ошибка: Слишком длинное имя хоста: %s\n", hostname);
+        return;
+    }
+
     hostname[HOSTNAME_MAX_LEN - 1] = '0';
 
     SSL_CTX *ctx = SSL_CTX_new(TLS_client_method());
@@ -92,7 +179,7 @@ void process_hostname(const char *url, FILE *output) {
         fprintf(stderr, "Неверный задан URL: %s\n", url);
         return;
     }
-//    printf("[ Сканирование %s ]\n", url);
+
     fprintf(output, "[ %s ]\n", url);
 
     SSL *ssl = SSL_new(ctx);
@@ -136,10 +223,14 @@ void process_hostname(const char *url, FILE *output) {
     print_supported_algorithms(ssl, output);
     print_certificate_key_length(ssl, output);
     print_tls_versions(ssl, output);
+    if (check_heartbleed(ssl, output)) {
+        // Сервер уязвим
+    } else {
+        fprintf(output, "!! Сервер зашищен от Heartbleed\n");
+    }
 
     SSL_shutdown(ssl);
     close(sockfd);
-    //goto ssl_end;
 
 ssl_end:
     SSL_free(ssl);
@@ -147,51 +238,34 @@ ssl_end:
 }
 
 int main(int argc, char *argv[]) {
-    if (argc < 2) {
-        fprintf(stderr, "Usage: %s [-f <file>] [-o <output_file>] [<hostname1> <hostname2> ...]\n", argv[0]);
-        return 1;
-    }
+    Options  options = {0};
+    parse_options(argc, argv, &options);
 
     SSL_library_init();
     SSL_load_error_strings();
     OpenSSL_add_all_ciphers();
     OpenSSL_add_all_digests();
 
-    char *output_filename = NULL;
-    char *input_filename = NULL;
-    int i = 1;
-    while (i < argc && argv[i][0] == '-') {
-        if (strcmp(argv[i], "-f") == 0 && i + 1 < argc) {
-            input_filename = argv[i + 1];
-            i += 2;
-        } else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
-            output_filename = argv[i + 1];
-            i += 2;
-        } else {
-            fprintf(stderr, "Неверный параметр: %s\n", argv[i]);
-            return 1;
-        }
-    }
-
     FILE *output = stdout;
-    if (output_filename) {
-        output = fopen(output_filename, "w");
+    if (options.output_filename) {
+        output = fopen(options.output_filename, "w");
         if (!output) {
             perror("Ошибка открытия выходного файла");
             return 1;
         }
     }
-    if (input_filename) {
-        FILE *input = fopen(input_filename, "r");
+    if (options.input_filename) {
+        FILE *input = fopen(options.input_filename, "r");
         if (!input) {
             perror("Ошибка открытия входного файла");
             return 1;
         }
-        char hostname[HOSTNAME_MAX_LEN];
+        char hostname[HOSTNAME_MAX_LEN + 1];
         int count = 0;
         int total = 0;
 
-        while (fscanf(input, "%s", hostname) != EOF) {
+        while (fgets(hostname, sizeof(hostname), input) != NULL) {
+            hostname[strcspn(hostname, "\n")] = 0;
             total++;
         }
         if (total == 0) {
@@ -203,6 +277,11 @@ int main(int argc, char *argv[]) {
         rewind(input);
 
         while (fscanf(input, "%s", hostname) != EOF) {
+            hostname[strcspn(hostname, "\n")] = 0;
+            if (strlen(hostname) >= HOSTNAME_MAX_LEN) {
+                fprintf(stderr, "Ошибка: Слишком длинное имя хоста: %s\n", hostname);
+                continue;
+            }
             count++;
             double percentage = (double)count * 100 / total;
             printf("[ Сканирование %s ] %.2lf%%\n", hostname, percentage);
@@ -211,8 +290,8 @@ int main(int argc, char *argv[]) {
         fclose(input);
     } else {
         int count = 0;
-        int total = argc - i;
-        for (; i < argc; i++) {
+        int total = argc - optind;
+        for (int i = optind; i < argc; i++) {
             const char *hostname = argv[i];
             count++;
             printf("[ Сканирование %s ] %d%%\n", hostname, (count * 100) / total);
@@ -220,7 +299,7 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    if (output_filename) {
+    if (options.output_filename) {
         fclose(output);
     }
 
