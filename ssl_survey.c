@@ -162,7 +162,7 @@ void process_hostname(const char *url, FILE *output) {
         return;
     }
 
-    hostname[HOSTNAME_MAX_LEN - 1] = '0';
+    hostname[HOSTNAME_MAX_LEN - 1] = '0'; 
 
     SSL_CTX *ctx = SSL_CTX_new(TLS_client_method());
 
