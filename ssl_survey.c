@@ -39,7 +39,7 @@ void parse_options(int argc, char *argv[], Options *options) {
                 options->output_filename = optarg;
                 break;
             case 'h':
-                fprintf(stderr, "Usage: %s [--input <file>] [--output <file>] [--verbose] [<hostname1> <hostname2> ...]\n", argv[0]);
+                fprintf(stderr, "Usage: %s [--input <file>] [--output <file>] [<hostname1> <hostname2> ...]\n", argv[0]);
                 fprintf(stderr, "  --input, -f <file>      Input file with hostnames\n");
                 fprintf(stderr, "  --output, -o <file>     Output file for results\n");
                 fprintf(stderr, "  --help, -h              Show this help message\n");
