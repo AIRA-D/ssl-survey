@@ -11,13 +11,15 @@
 #include <errno.h>
 
 #define HOSTNAME_MAX_LEN 256
-#define HTTPS_PORT 443
+#define DEFAULT_HTTPS_PORT 443
 #define HEARTBEAT_TIMEOUT_SEC 5
 
 typedef struct {
     char *input_filename;
     char *output_filename;
     int verbose;
+    char **hostnames;
+    int hostname_count;
 } Options;
 
 void parse_options(int argc, char *argv[], Options *options) {
@@ -39,7 +41,7 @@ void parse_options(int argc, char *argv[], Options *options) {
                 options->output_filename = optarg;
                 break;
             case 'h':
-                fprintf(stderr, "Usage: %s [--input <file>] [--output <file>] [<hostname1> <hostname2> ...]\n", argv[0]);
+                fprintf(stderr, "Usage: %s [--input <file>] [--output <file>] [--verbose] [<hostname1> <hostname2> ...]\n", argv[0]);
                 fprintf(stderr, "  --input, -f <file>      Input file with hostnames\n");
                 fprintf(stderr, "  --output, -o <file>     Output file for results\n");
                 fprintf(stderr, "  --help, -h              Show this help message\n");
@@ -48,6 +50,19 @@ void parse_options(int argc, char *argv[], Options *options) {
                 fprintf(stderr, "Invalid option: %c\n", optopt);
                 exit(1);
         }
+    }
+
+    options->hostname_count = argc - optind;
+    if (options->hostname_count > 0) {
+        options->hostnames = malloc((options->hostname_count + 1) * sizeof(char*));
+        if (!options->hostnames) {
+            fprintf(stderr, "Ошибка выделения памятиn");
+            exit(1);
+        }
+        for (int i = 0; i < options->hostname_count; i++) {
+            options->hostnames[i] = argv[optind + i];
+        }
+        options->hostnames[options->hostname_count] = NULL;
     }
 }
 void print_supported_algorithms(SSL *ssl, FILE *output) {
@@ -108,11 +123,31 @@ void print_tls_versions(SSL *ssl, FILE *output) {
 
 }
 int check_heartbleed(SSL *ssl, FILE *output) {
+
     int is_vulnerable = 0;
 
-    if (SSL_get_version(ssl) == TLS1_VERSION || SSL_get_version(ssl) == TLS1_1_VERSION) {
+    const char* version_str = SSL_get_version(ssl);
+    long version = 0;
 
-        int bytes_written = SSL_write(ssl, "\x01\x00\x00\x03", 4);
+    if (strcmp(version_str, "TLSv1") == 0) {
+        version = TLS1_VERSION;
+    } else if (strcmp(version_str, "TLSv1.1") == 0) {
+        version = TLS1_1_VERSION;
+    } else if (strcmp(version_str, "TLSv1.2") == 0) {
+        version = TLS1_2_VERSION;
+    } else if (strcmp(version_str, "TLSv1.3") == 0) {
+        version = TLS1_3_VERSION;
+    }
+
+    long max_version = SSL_get_max_proto_version(ssl);
+    long min_version = SSL_get_min_proto_version(ssl);
+
+    if ((version == TLS1_VERSION || version == TLS1_1_VERSION) &&
+        (max_version >= TLS1_VERSION && min_version <= TLS1_1_VERSION))
+    {
+//      int bytes_written = SSL_write(ssl, "\x01\x00\x00\x03", 4);
+        unsigned char heartbeat_header[] = { 0x01, 0x00, 0x00, 0x03 };
+        int bytes_written = SSL_write(ssl, heartbeat_header, sizeof(heartbeat_header));
 
         if (bytes_written == 4) {
             struct timeval timeout;
@@ -128,7 +163,7 @@ int check_heartbleed(SSL *ssl, FILE *output) {
             if (result > 0) {
                 char buffer[1024];
                 int bytes_read = SSL_read(ssl, buffer, sizeof(buffer));
-                if (bytes_read > 0) {
+                if (bytes_read == 4) { //  Проверка на стандартный размер Heartbeat-пакета
                     is_vulnerable = 1;
                     fprintf(output, "!! Сервер уязвим к атаке Heartbleed\n");
                 } else {
@@ -162,7 +197,16 @@ void process_hostname(const char *url, FILE *output) {
         return;
     }
 
-    hostname[HOSTNAME_MAX_LEN - 1] = '0'; 
+
+    fprintf(output, "[ %s ]\n", hostname);
+
+    hostname[HOSTNAME_MAX_LEN - 1] = '0';
+    int port = DEFAULT_HTTPS_PORT;
+    char *colon = strchr(hostname, ':');
+    if (colon) {
+        *colon = '\0';
+        port = atoi(colon + 1);
+    }
 
     SSL_CTX *ctx = SSL_CTX_new(TLS_client_method());
 
@@ -172,15 +216,8 @@ void process_hostname(const char *url, FILE *output) {
     }
 
     SSL_CTX_set_options(ctx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_COMPRESSION);
-    SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
+    SSL_CTX_set_min_proto_version(ctx, TLS1_VERSION);
     SSL_CTX_set_max_proto_version(ctx, TLS1_3_VERSION);
-
-    if (sscanf(url, "https://%[^/]", hostname) != 1) {
-        fprintf(stderr, "Неверный задан URL: %s\n", url);
-        return;
-    }
-
-    fprintf(output, "[ %s ]\n", url);
 
     SSL *ssl = SSL_new(ctx);
     if (!ssl) {
@@ -203,7 +240,7 @@ void process_hostname(const char *url, FILE *output) {
     struct sockaddr_in server_addr;
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(HTTPS_PORT);
+    server_addr.sin_port = htons(port);
     memcpy(&server_addr.sin_addr, he -> h_addr, he -> h_length);
 
     if (connect(sockfd, (struct sockaddr*) & server_addr, sizeof(server_addr)) == -1) {
@@ -290,13 +327,17 @@ int main(int argc, char *argv[]) {
         fclose(input);
     } else {
         int count = 0;
-        int total = argc - optind;
-        for (int i = optind; i < argc; i++) {
-            const char *hostname = argv[i];
+        int total = options.hostname_count;
+        for (int i = 0; i < total; i++) {
+            const char *hostname = options.hostnames[i];
             count++;
             printf("[ Сканирование %s ] %d%%\n", hostname, (count * 100) / total);
             process_hostname(hostname, output);
         }
+    }
+
+    if (options.hostnames) {
+        free(options.hostnames);
     }
 
     if (options.output_filename) {
