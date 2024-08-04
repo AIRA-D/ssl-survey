@@ -13,7 +13,7 @@
 
 #### Компиляция
 ```bash
- gcc ssl_survey.c -o ssl_survey -lssl -lcrypto
+ gcc ssl_survey.c -o ssl_survey -L/usr/lib/openssl-1.1f -lssl -lcrypto
 ```
 или используйте файл `CMakeLists.txt`
 
